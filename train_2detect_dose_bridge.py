@@ -1,0 +1,937 @@
+"""Photon-thinning bridge on 2DeteCT: trajectory precomputation and training."""
+
+import os
+import argparse
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+from torch.cuda.amp import GradScaler, autocast
+from glob import glob
+from tqdm import tqdm
+from PIL import Image
+from scipy.interpolate import interp1d
+from scipy.ndimage import uniform_filter
+from scipy.sparse.linalg import lsmr as scipy_lsmr
+from scipy.sparse.linalg import LinearOperator
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import json
+import traceback
+import warnings
+
+DATA_ROOT = os.environ.get("DOSE_BRIDGE_DATA", "data")
+CODE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+warnings.filterwarnings('ignore')
+
+try:
+    import astra
+    HAS_ASTRA = True
+except ImportError:
+    HAS_ASTRA = False
+    print("WARNING: astra-toolbox not found.")
+
+
+# Configuration
+
+class Config:
+    sino_path = f"{DATA_ROOT}/2DeteCT"
+    precomputed_path = f"{DATA_ROOT}/2DeteCT_dose_bridge/precomputed"
+    output_path = f"{DATA_ROOT}/2DeteCT_dose_bridge/output"
+
+    # 2DeteCT geometry
+    DET_PIX = 0.0748
+    SOD = 431.019989
+    SDD = 529.000488
+
+    recon_size = 256
+    n_angles_full = 3600
+    mode = 2
+
+    lsmr_iter = 50
+    lsmr_damp = 1e-2
+
+    I0_high = 1e5
+    I0_low = 1e3
+    alpha = None
+    n_steps = 5
+    bridge_sigma = 0.0
+    time_schedule = 'geometric'
+
+    base_channels = 64
+    t_dim = 128
+
+    batch_size = 64
+    epochs = 80
+    lr = 1e-4
+    weight_decay = 1e-4
+
+    train_ratio = 0.8
+    val_ratio = 0.1
+    num_workers = 4
+    use_amp = True
+    seed = 42
+
+    def compute_alpha(self):
+        self.alpha = self.I0_low / self.I0_high
+
+
+def get_time_steps(config):
+    """Return time steps from t=0 (full-dose) to t=1 (low-dose).
+
+    uniform:            uniform in t-space.
+    geometric:          uniform in dose-space u=alpha^t.
+    equal_improvement:  uniform in MSE-space u=alpha^{-t}, derived from
+                        E[||x^(t)-x^(0)||^2] = K*(alpha^{-t}-1).
+                        Small dt near t=1 (low-dose), large dt near t=0.
+    """
+    N = config.n_steps
+    alpha = config.alpha
+    if config.time_schedule == 'geometric':
+        u_steps = np.linspace(1.0, alpha, N + 1)
+        u_steps = np.clip(u_steps, 1e-15, None)
+        t_steps = np.log(u_steps) / np.log(alpha)
+    elif config.time_schedule == 'equal_improvement':
+        s = np.zeros(N + 1)
+        for k in range(N + 1):
+            u_k = 1.0 + (N - k) / N * (1.0 / alpha - 1.0)
+            s[k] = 0.0 if k == N else -np.log(u_k) / np.log(alpha)
+        t_steps = s[::-1]
+    else:
+        t_steps = np.linspace(0.0, 1.0, N + 1)
+    return t_steps.astype(np.float32)
+
+
+class AstraProjector2D:
+    """ASTRA projector with forward() and adjoint() for scipy LSMR."""
+
+    def __init__(self, config):
+        self.n = config.recon_size
+        self.na = config.n_angles_full
+        self.nd = 956
+
+        det_pix_sz = 2 * config.DET_PIX
+        vox = det_pix_sz * self.nd * config.SOD / config.SDD / self.n
+
+        angles = np.linspace(0, 2 * np.pi, self.na, endpoint=False)
+        self.pg = astra.create_proj_geom(
+            'fanflat', det_pix_sz / vox, self.nd,
+            angles, config.SOD / vox, (config.SDD - config.SOD) / vox
+        )
+        self.vg = astra.create_vol_geom(self.n, self.n)
+        self.proj_id = astra.create_projector('cuda', self.pg, self.vg)
+        self.img_size = self.n * self.n
+
+    def forward(self, x):
+        img = x.reshape(self.n, self.n).astype(np.float32)
+        vid = astra.data2d.create('-vol', self.vg, img)
+        sid = astra.data2d.create('-sino', self.pg, 0)
+        cfg = astra.astra_dict('FP_CUDA')
+        cfg['ProjectorId'] = self.proj_id
+        cfg['VolumeDataId'] = vid
+        cfg['ProjectionDataId'] = sid
+        aid = astra.algorithm.create(cfg)
+        astra.algorithm.run(aid)
+        sino = astra.data2d.get(sid).flatten()
+        astra.algorithm.delete(aid)
+        astra.data2d.delete(vid)
+        astra.data2d.delete(sid)
+        return sino.astype(np.float64)
+
+    def adjoint(self, y):
+        sino = y.reshape(self.na, self.nd).astype(np.float32)
+        sid = astra.data2d.create('-sino', self.pg, sino)
+        vid = astra.data2d.create('-vol', self.vg, 0)
+        cfg = astra.astra_dict('BP_CUDA')
+        cfg['ProjectorId'] = self.proj_id
+        cfg['ProjectionDataId'] = sid
+        cfg['ReconstructionDataId'] = vid
+        aid = astra.algorithm.create(cfg)
+        astra.algorithm.run(aid)
+        img = astra.data2d.get(vid).flatten()
+        astra.algorithm.delete(aid)
+        astra.data2d.delete(sid)
+        astra.data2d.delete(vid)
+        return img.astype(np.float64)
+
+    def cleanup(self):
+        astra.projector.delete(self.proj_id)
+
+
+def lsmr_recon(projector, sinogram, config):
+    """
+    Unweighted LSMR reconstruction (all angles, all weights=1):
+        x* = argmin_x ||Ax - y||^2 + damp^2 * ||x||^2
+    """
+    na, nd = sinogram.shape
+
+    def matvec(x):
+        return projector.forward(x)
+
+    def rmatvec(y):
+        return projector.adjoint(y)
+
+    A_op = LinearOperator(
+        shape=(na * nd, projector.img_size),
+        matvec=matvec, rmatvec=rmatvec, dtype=np.float64
+    )
+    rhs = sinogram.flatten().astype(np.float64)
+
+    result = scipy_lsmr(
+        A_op, rhs,
+        damp=config.lsmr_damp,
+        maxiter=config.lsmr_iter,
+        atol=1e-6, btol=1e-6, show=False
+    )
+
+    x = result[0].reshape(config.recon_size, config.recon_size)
+    return np.maximum(x, 0).astype(np.float32)
+
+
+def preprocess_sinogram(slice_idx, mode, config):
+    """Load and preprocess 2DeteCT sinogram: flat-field correction + log transform."""
+    base = os.path.join(config.sino_path, f'slice{slice_idx:05d}', f'mode{mode}')
+    sino = np.array(Image.open(os.path.join(base, 'sinogram.tif')), dtype=np.float32)
+    dark = np.array(Image.open(os.path.join(base, 'dark.tif')), dtype=np.float32)
+    flat1 = np.array(Image.open(os.path.join(base, 'flat1.tif')), dtype=np.float32)
+    flat2 = np.array(Image.open(os.path.join(base, 'flat2.tif')), dtype=np.float32)
+    flat = (flat1 + flat2) / 2.0
+
+    sino = sino[:, 0::2] + sino[:, 1::2]
+    dark = dark[0, 0::2] + dark[0, 1::2]
+    flat = flat[0, 0::2] + flat[0, 1::2]
+
+    data = ((sino - dark) / (flat - dark))[:-1, :]
+
+    shift = config.DET_PIX if (slice_idx in range(1, 2831) or slice_idx in range(5521, 5871)) else 0.0
+    if shift != 0.0:
+        det_pix_sz = 2 * config.DET_PIX
+        grid = np.arange(956) * det_pix_sz
+        data = interp1d(grid, data, axis=1, kind='linear',
+                        bounds_error=False, fill_value='extrapolate')(grid + shift)
+
+    data = np.clip(data, 1e-6, None)
+    data = -np.log(data)
+    return np.ascontiguousarray(data.astype(np.float32))
+
+
+def compute_psnr(pred, gt):
+    mse = np.mean((pred - gt) ** 2)
+    if mse < 1e-10:
+        return 100.0
+    data_range = max(gt.max() - gt.min(), 1e-10)
+    return 10.0 * np.log10(data_range ** 2 / mse)
+
+
+def compute_ssim(pred, gt, win_size=7):
+    data_range = max(gt.max() - gt.min(), 1e-10)
+    C1 = (0.01 * data_range) ** 2
+    C2 = (0.03 * data_range) ** 2
+    mu_x = uniform_filter(pred, size=win_size, mode='reflect')
+    mu_y = uniform_filter(gt, size=win_size, mode='reflect')
+    s_x = np.maximum(uniform_filter(pred ** 2, size=win_size, mode='reflect') - mu_x ** 2, 0)
+    s_y = np.maximum(uniform_filter(gt ** 2, size=win_size, mode='reflect') - mu_y ** 2, 0)
+    s_xy = uniform_filter(pred * gt, size=win_size, mode='reflect') - mu_x * mu_y
+    ssim_map = ((2 * mu_x * mu_y + C1) * (2 * s_xy + C2)) / \
+               ((mu_x ** 2 + mu_y ** 2 + C1) * (s_x + s_y + C2))
+    return float(np.mean(ssim_map))
+
+
+def compute_rmse(pred, gt):
+    return float(np.sqrt(np.mean((pred - gt) ** 2)))
+
+
+def precompute_slice_dose(slice_idx, config, projector):
+    """
+    Precompute dose bridge trajectory for a single slice.
+
+    Steps:
+      1. Load full-dose sinogram y_full (from preprocess_sinogram)
+      2. Simulate low-dose sinogram via Poisson noise
+      3. Generate intermediate sinograms via Binomial Thinning
+      4. LSMR reconstruct at each time step
+      5. Normalize, compute velocities, and save
+    """
+    results = []
+    try:
+        y_full = preprocess_sinogram(slice_idx, config.mode, config)
+        na, nd = y_full.shape
+        if na != config.n_angles_full - 1:
+            pass
+
+        alpha = config.alpha
+        I0_high = config.I0_high
+        I0_low = config.I0_low
+
+        q_full = np.round(I0_high * np.exp(-y_full)).astype(np.int64)
+        q_full = np.maximum(q_full, 1)
+
+        n_steps = config.n_steps
+        times = get_time_steps(config)
+
+        sinograms = {}
+        sinograms[0.0] = y_full
+
+        for i in range(1, n_steps + 1):
+            t = times[i]
+            alpha_t = alpha ** t
+            I0_t = I0_high * alpha_t
+
+            q_t = np.random.binomial(q_full, alpha_t)
+            q_t = np.maximum(q_t, 1)
+
+            y_t = -np.log(q_t.astype(np.float64) / I0_t)
+            sinograms[t] = y_t.astype(np.float32)
+
+        images = {}
+        for t in times:
+            images[t] = lsmr_recon(projector, sinograms[t], config)
+
+        x0 = images[0.0]
+        vmin = float(x0.min())
+        vmax = float(x0.max())
+        scale = vmax - vmin + 1e-8
+
+        def normalize(x):
+            return np.clip((x - vmin) / scale, 0.0, 1.0).astype(np.float32)
+
+        images_n = {t: normalize(images[t]) for t in times}
+
+        for step in range(n_steps):
+            t_curr = times[step + 1]
+            t_prev = times[step]
+            dt = t_curr - t_prev
+
+            x_curr = images_n[t_curr]
+            x_prev = images_n[t_prev]
+
+            velocity = (x_prev - x_curr) / (dt + 1e-8)
+
+            sample_id = f"slice{slice_idx:05d}_step{step}"
+            save_path = os.path.join(config.precomputed_path, f"{sample_id}.npz")
+
+            np.savez_compressed(
+                save_path,
+                x_t=x_curr,
+                x_t_next=x_prev,
+                velocity=velocity,
+                x0=images_n[0.0],
+                x1=images_n[1.0],
+                t=np.float32(t_curr),
+                t_next=np.float32(t_prev),
+                dt=np.float32(dt),
+                slice_idx=slice_idx,
+                vmin=np.float32(vmin),
+                vmax=np.float32(vmax),
+            )
+            results.append(sample_id)
+
+    except Exception as e:
+        print(f"  Error slice {slice_idx}: {e}")
+        traceback.print_exc()
+    return results
+
+
+def precompute_all(config, start=1, end=1000):
+    assert HAS_ASTRA
+    os.makedirs(config.precomputed_path, exist_ok=True)
+
+    projector = AstraProjector2D(config)
+
+    print(f"Precomputing dose bridge slices {start}-{end}")
+    print(f"  Recon size: {config.recon_size}")
+    print(f"  I0_high: {config.I0_high:.0f}, I0_low: {config.I0_low:.0f}, alpha: {config.alpha:.6f}")
+    print(f"  LSMR iter: {config.lsmr_iter}, damp: {config.lsmr_damp}")
+    print(f"  Steps: {config.n_steps}")
+    print(f"  Output: {config.precomputed_path}")
+
+    total_samples = 0
+    for s in tqdm(range(start, end + 1), desc="Precomputing"):
+        slice_dir = os.path.join(config.sino_path, f'slice{s:05d}', f'mode{config.mode}')
+        if not os.path.isdir(slice_dir):
+            continue
+
+        existing = os.path.join(config.precomputed_path, f"slice{s:05d}_step0.npz")
+        if os.path.exists(existing):
+            total_samples += config.n_steps
+            continue
+
+        results = precompute_slice_dose(s, config, projector)
+        total_samples += len(results)
+
+        if s % 50 == 0:
+            f = os.path.join(config.precomputed_path, f"slice{s:05d}_step0.npz")
+            if os.path.exists(f):
+                d = np.load(f)
+                print(f"  Slice {s}: x0 range=[{d['x0'].min():.3f}, {d['x0'].max():.3f}] "
+                      f"x1 range=[{d['x1'].min():.3f}, {d['x1'].max():.3f}] "
+                      f"vel std={d['velocity'].std():.4f}")
+
+    projector.cleanup()
+    print(f"\nDone. Total samples: {total_samples}")
+
+
+class DoseBridgeDataset(Dataset):
+    def __init__(self, config, split='train'):
+        self.pred_target = getattr(config, 'pred_target', 'velocity')
+        all_files = sorted(glob(os.path.join(config.precomputed_path, '*.npz')))
+        if len(all_files) == 0:
+            raise RuntimeError(f"No precomputed data at {config.precomputed_path}")
+
+        slice_files = {}
+        for f in all_files:
+            sid = os.path.basename(f).split('_step')[0]
+            slice_files.setdefault(sid, []).append(f)
+
+        slice_ids = sorted(slice_files.keys())
+        np.random.seed(config.seed)
+        perm = np.random.permutation(len(slice_ids))
+        n_train = int(len(slice_ids) * config.train_ratio)
+        n_val = int(len(slice_ids) * config.val_ratio)
+
+        if split == 'train':
+            selected = [slice_ids[i] for i in perm[:n_train]]
+        elif split == 'val':
+            selected = [slice_ids[i] for i in perm[n_train:n_train + n_val]]
+        else:
+            selected = [slice_ids[i] for i in perm[n_train + n_val:]]
+
+        self.files = []
+        for sid in selected:
+            self.files.extend(slice_files[sid])
+
+    def __len__(self):
+        return len(self.files)
+
+    def __getitem__(self, idx):
+        data = np.load(self.files[idx])
+        x_t = data['x_t']
+        t = float(data['t'])
+        dt = float(data['dt'])
+        target = data['x0'] if self.pred_target == 'x0' else data['velocity']
+
+        return {
+            'x_t': torch.from_numpy(x_t).float().unsqueeze(0),
+            'target': torch.from_numpy(target).float().unsqueeze(0),
+            't': torch.tensor([t], dtype=torch.float32),
+            'dt': torch.tensor([dt], dtype=torch.float32),
+        }
+
+
+class SinusoidalEmbedding(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, t):
+        half = self.dim // 2
+        freqs = torch.exp(-np.log(10000) * torch.arange(half, device=t.device).float() / half)
+        args = t[:, None] * freqs[None, :]
+        return torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
+
+
+class ConvBlock(nn.Module):
+    def __init__(self, in_ch, out_ch, t_dim=None):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_ch, out_ch, 3, padding=1)
+        self.norm1 = nn.GroupNorm(min(8, out_ch), out_ch)
+        self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding=1)
+        self.norm2 = nn.GroupNorm(min(8, out_ch), out_ch)
+        self.t_proj = nn.Linear(t_dim, out_ch) if t_dim else None
+        self.shortcut = nn.Conv2d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
+
+    def forward(self, x, t_emb=None):
+        h = F.silu(self.norm1(self.conv1(x)))
+        if t_emb is not None and self.t_proj is not None:
+            h = h + self.t_proj(t_emb)[:, :, None, None]
+        h = F.silu(self.norm2(self.conv2(h)))
+        return h + self.shortcut(x)
+
+
+class UNetWithTime(nn.Module):
+    def __init__(self, in_ch=1, out_ch=1, base_ch=64, t_dim=128):
+        super().__init__()
+        self.t_embed = nn.Sequential(
+            SinusoidalEmbedding(t_dim),
+            nn.Linear(t_dim, t_dim * 4), nn.SiLU(), nn.Linear(t_dim * 4, t_dim)
+        )
+        self.enc1 = ConvBlock(in_ch, base_ch, t_dim)
+        self.enc2 = ConvBlock(base_ch, base_ch * 2, t_dim)
+        self.enc3 = ConvBlock(base_ch * 2, base_ch * 4, t_dim)
+        self.enc4 = ConvBlock(base_ch * 4, base_ch * 8, t_dim)
+        self.pool = nn.MaxPool2d(2)
+        self.bottleneck = ConvBlock(base_ch * 8, base_ch * 8, t_dim)
+        self.up4 = nn.ConvTranspose2d(base_ch * 8, base_ch * 8, 2, stride=2)
+        self.dec4 = ConvBlock(base_ch * 16, base_ch * 8, t_dim)
+        self.up3 = nn.ConvTranspose2d(base_ch * 8, base_ch * 4, 2, stride=2)
+        self.dec3 = ConvBlock(base_ch * 8, base_ch * 4, t_dim)
+        self.up2 = nn.ConvTranspose2d(base_ch * 4, base_ch * 2, 2, stride=2)
+        self.dec2 = ConvBlock(base_ch * 4, base_ch * 2, t_dim)
+        self.up1 = nn.ConvTranspose2d(base_ch * 2, base_ch, 2, stride=2)
+        self.dec1 = ConvBlock(base_ch * 2, base_ch, t_dim)
+        self.out = nn.Conv2d(base_ch, out_ch, 1)
+
+    def forward(self, x, t):
+        t_emb = self.t_embed(t)
+        e1 = self.enc1(x, t_emb)
+        e2 = self.enc2(self.pool(e1), t_emb)
+        e3 = self.enc3(self.pool(e2), t_emb)
+        e4 = self.enc4(self.pool(e3), t_emb)
+        b = self.bottleneck(self.pool(e4), t_emb)
+        d4 = self.dec4(torch.cat([self.up4(b), e4], 1), t_emb)
+        d3 = self.dec3(torch.cat([self.up3(d4), e3], 1), t_emb)
+        d2 = self.dec2(torch.cat([self.up2(d3), e2], 1), t_emb)
+        d1 = self.dec1(torch.cat([self.up1(d2), e1], 1), t_emb)
+        return self.out(d1)
+
+
+def train_epoch(model, loader, optimizer, scaler, device, use_amp):
+    model.train()
+    total_loss, n = 0, 0
+    for batch in loader:
+        x_t = batch['x_t'].to(device)
+        target = batch['target'].to(device)
+        t = batch['t'].squeeze(-1).to(device)
+        optimizer.zero_grad()
+        if use_amp:
+            with autocast():
+                out = model(x_t, t)
+                loss = F.mse_loss(out, target) + 0.1 * F.l1_loss(out, target)
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            out = model(x_t, t)
+            loss = F.mse_loss(out, target) + 0.1 * F.l1_loss(out, target)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+            optimizer.step()
+        total_loss += loss.item()
+        n += 1
+    return total_loss / max(n, 1)
+
+
+def validate(model, loader, device):
+    model.eval()
+    total_loss, n = 0, 0
+    with torch.no_grad():
+        for batch in loader:
+            out = model(batch['x_t'].to(device), batch['t'].squeeze(-1).to(device))
+            target = batch['target'].to(device)
+            total_loss += F.mse_loss(out, target).item()
+            n += 1
+    return total_loss / max(n, 1)
+
+
+def inference_on_slice(model, slice_idx, config, device, projector=None):
+    """
+    Run dose bridge inference on a single slice.
+    Euler integrate: x_{t-dt} = x_t + v_theta(x_t, t) * dt, from t=1 to t=0.
+    Returns: x0 (GT full-dose), x1 (low-dose input), x_result, trajectory
+    """
+    assert HAS_ASTRA
+
+    own = projector is None
+    if own:
+        projector = AstraProjector2D(config)
+
+    alpha = config.alpha
+    I0_high = config.I0_high
+    I0_low = config.I0_low
+
+    y_full = preprocess_sinogram(slice_idx, config.mode, config)
+    x_full = lsmr_recon(projector, y_full, config)
+
+    q_full = np.round(I0_high * np.exp(-y_full)).astype(np.int64)
+    q_full = np.maximum(q_full, 1)
+    lambda_low = I0_low * np.exp(-y_full)
+    q_low = np.random.poisson(lambda_low).astype(np.int64)
+    q_low = np.maximum(q_low, 1)
+    y_low = -np.log(q_low.astype(np.float64) / I0_low).astype(np.float32)
+    x_low = lsmr_recon(projector, y_low, config)
+
+    vmin = float(x_full.min())
+    vmax = float(x_full.max())
+    scale = vmax - vmin + 1e-8
+
+    def normalize(x):
+        return np.clip((x - vmin) / scale, 0.0, 1.0).astype(np.float32)
+
+    x0 = normalize(x_full)
+    x1 = normalize(x_low)
+
+    model.eval()
+    t_steps = get_time_steps(config)
+    t_reversed = t_steps[::-1]
+    x_current = x1.copy()
+    trajectory = [(t_reversed[0], x_current.copy())]
+    pred_target = getattr(config, 'pred_target', 'velocity')
+
+    with torch.no_grad():
+        for i in range(len(t_reversed) - 1):
+            t_curr = float(t_reversed[i])
+            t_next = float(t_reversed[i + 1])
+
+            x_t_tensor = torch.from_numpy(x_current).float().unsqueeze(0).unsqueeze(0).to(device)
+            t_tensor = torch.tensor([t_curr], dtype=torch.float32).to(device)
+            out = model(x_t_tensor, t_tensor).cpu().numpy().squeeze()
+
+            if pred_target == 'x0':
+                x0_pred = out
+                if t_next < 1e-6:
+                    x_current = x0_pred
+                else:
+                    ratio = t_next / t_curr
+                    x_current = x0_pred + ratio * (x_current - x0_pred)
+            else:
+                dt = t_curr - t_next
+                x_current = x_current + out * dt
+
+            x_current = np.clip(x_current, 0.0, 1.0)
+            trajectory.append((t_next, x_current.copy()))
+
+    if own:
+        projector.cleanup()
+    return x0, x1, x_current, trajectory
+
+
+def get_test_slices(config):
+    all_files = sorted(glob(os.path.join(config.precomputed_path, '*_step0.npz')))
+    slice_ids = sorted(set(
+        os.path.basename(f).split('_step')[0] for f in all_files
+    ))
+    np.random.seed(config.seed)
+    perm = np.random.permutation(len(slice_ids))
+    n_train = int(len(slice_ids) * config.train_ratio)
+    n_val = int(len(slice_ids) * config.val_ratio)
+    test_ids = [slice_ids[i] for i in perm[n_train + n_val:]]
+    return [int(sid.replace('slice', '')) for sid in test_ids]
+
+
+def quick_evaluate(model, config, device, epoch, n_samples=5):
+    net = model.module if hasattr(model, 'module') else model
+    test_slices = get_test_slices(config)
+    np.random.seed(epoch)
+    eval_slices = np.random.choice(test_slices, min(n_samples, len(test_slices)), replace=False)
+
+    metrics = {'low_dose': [], 'dose_bridge': []}
+    projector = AstraProjector2D(config)
+
+    for s in eval_slices:
+        try:
+            x0, x1, x_db, _ = inference_on_slice(net, s, config, device, projector=projector)
+            metrics['low_dose'].append((compute_psnr(x1, x0), compute_ssim(x1, x0)))
+            metrics['dose_bridge'].append((compute_psnr(x_db, x0), compute_ssim(x_db, x0)))
+        except Exception as e:
+            print(f"  Eval error slice {s}: {e}")
+
+    projector.cleanup()
+
+    if not metrics['dose_bridge']:
+        return None
+
+    print(f"\n{'='*70}")
+    print(f"Epoch {epoch+1} eval ({len(metrics['dose_bridge'])} samples)")
+    for k in ['low_dose', 'dose_bridge']:
+        p = np.mean([m[0] for m in metrics[k]])
+        s = np.mean([m[1] for m in metrics[k]])
+        print(f"  {k:15s}: PSNR={p:.2f}  SSIM={s:.4f}")
+    db_p = np.mean([m[0] for m in metrics['dose_bridge']])
+    ld_p = np.mean([m[0] for m in metrics['low_dose']])
+    print(f"  DB vs LD: {db_p - ld_p:+.2f} dB")
+    print(f"{'='*70}\n")
+
+    return {'epoch': epoch + 1,
+            'low_dose': {'psnr': float(ld_p)},
+            'dose_bridge': {'psnr': float(db_p)}}
+
+
+def full_evaluate(model, config, device, n_samples=100, n_vis=8):
+    os.makedirs(config.output_path, exist_ok=True)
+    test_slices = get_test_slices(config)
+    print(f"Evaluating on {min(n_samples, len(test_slices))} test slices...")
+
+    results = {m: {'psnr': [], 'ssim': [], 'rmse': []}
+               for m in ['low_dose', 'dose_bridge']}
+    vis_data = []
+    projector = AstraProjector2D(config)
+
+    for s in tqdm(test_slices[:n_samples], desc="Evaluating"):
+        try:
+            x0, x1, x_db, traj = inference_on_slice(
+                model, s, config, device, projector=projector)
+            for m, x in [('low_dose', x1), ('dose_bridge', x_db)]:
+                results[m]['psnr'].append(compute_psnr(x, x0))
+                results[m]['ssim'].append(compute_ssim(x, x0))
+                results[m]['rmse'].append(compute_rmse(x, x0))
+            if len(vis_data) < n_vis:
+                vis_data.append({'gt': x0, 'low_dose': x1,
+                                 'db': x_db, 'slice': s, 'trajectory': traj})
+        except Exception as e:
+            print(f"  Skip {s}: {e}")
+
+    projector.cleanup()
+
+    print("\n" + "=" * 80)
+    print("FINAL RESULTS")
+    print("=" * 80)
+    for m in ['low_dose', 'dose_bridge']:
+        if results[m]['psnr']:
+            p = np.mean(results[m]['psnr'])
+            ps = np.std(results[m]['psnr'])
+            ss = np.mean(results[m]['ssim'])
+            print(f"  {m:20s}: PSNR={p:.2f}+/-{ps:.2f}  SSIM={ss:.4f}")
+    print("=" * 80)
+
+    if vis_data:
+        nv = min(n_vis, len(vis_data))
+        fig, axes = plt.subplots(nv, 4, figsize=(16, 4 * nv))
+        if nv == 1:
+            axes = axes.reshape(1, -1)
+
+        for i in range(nv):
+            d = vis_data[i]
+            vm, vx = d['gt'].min(), d['gt'].max()
+            psnrs = {k: compute_psnr(d[k], d['gt']) for k in ['low_dose', 'db']}
+
+            axes[i, 0].imshow(d['gt'], cmap='gray', vmin=vm, vmax=vx)
+            axes[i, 0].set_title(f"Full-dose GT (slice {d['slice']})")
+            axes[i, 0].axis('off')
+
+            axes[i, 1].imshow(d['low_dose'], cmap='gray', vmin=vm, vmax=vx)
+            axes[i, 1].set_title(f"Low-dose {psnrs['low_dose']:.1f}dB")
+            axes[i, 1].axis('off')
+
+            color = 'green' if psnrs['db'] > psnrs['low_dose'] else 'red'
+            axes[i, 2].imshow(d['db'], cmap='gray', vmin=vm, vmax=vx)
+            axes[i, 2].set_title(f"Dose Bridge {psnrs['db']:.1f}dB ({psnrs['db']-psnrs['low_dose']:+.1f})",
+                                 color=color, fontweight='bold')
+            axes[i, 2].axis('off')
+
+            err = np.abs(d['db'] - d['gt'])
+            axes[i, 3].imshow(err, cmap='hot', vmin=0, vmax=max(err.max() * 0.5, 0.01))
+            axes[i, 3].set_title("Error (DB)")
+            axes[i, 3].axis('off')
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(config.output_path, 'comparison_dose_bridge.png'), dpi=150)
+        plt.close()
+
+        traj = vis_data[0]['trajectory']
+        x_gt_vis = vis_data[0]['gt']
+        vm, vx = x_gt_vis.min(), x_gt_vis.max()
+        n_show = min(len(traj), 7)
+        idxs = np.linspace(0, len(traj) - 1, n_show, dtype=int)
+        fig, axes = plt.subplots(2, n_show, figsize=(3 * n_show, 6))
+        for j, idx in enumerate(idxs):
+            t_val, img = traj[idx]
+            p = compute_psnr(img, x_gt_vis)
+            axes[0, j].imshow(img, cmap='gray', vmin=vm, vmax=vx)
+            axes[0, j].set_title(f"t={t_val:.2f}\nPSNR={p:.1f}")
+            axes[0, j].axis('off')
+            err = np.abs(img - x_gt_vis)
+            axes[1, j].imshow(err, cmap='hot', vmin=0, vmax=max(err.max() * 0.5, 0.01))
+            axes[1, j].set_title("Error")
+            axes[1, j].axis('off')
+        plt.suptitle("Dose Bridge Trajectory (t=1 low-dose -> t=0 full-dose)")
+        plt.tight_layout()
+        plt.savefig(os.path.join(config.output_path, 'trajectory_dose_bridge.png'), dpi=150)
+        plt.close()
+
+    summary = {}
+    for m in ['low_dose', 'dose_bridge']:
+        if results[m]['psnr']:
+            summary[m] = {
+                'psnr_mean': float(np.mean(results[m]['psnr'])),
+                'psnr_std': float(np.std(results[m]['psnr'])),
+                'ssim_mean': float(np.mean(results[m]['ssim'])),
+            }
+    summary['config'] = {
+        'recon_size': config.recon_size,
+        'I0_high': config.I0_high,
+        'I0_low': config.I0_low,
+        'n_steps': config.n_steps,
+        'lsmr_iter': config.lsmr_iter,
+        'lsmr_damp': config.lsmr_damp,
+    }
+    with open(os.path.join(config.output_path, 'results_dose_bridge.json'), 'w') as f:
+        json.dump(summary, f, indent=2)
+    print(f"Saved to {config.output_path}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description='2DeteCT Dose Bridge (Binomial Thinning)')
+    parser.add_argument('--precompute', action='store_true')
+    parser.add_argument('--train', action='store_true')
+    parser.add_argument('--eval', action='store_true')
+    parser.add_argument('--start', type=int, default=1)
+    parser.add_argument('--end', type=int, default=1000)
+    parser.add_argument('--recon_size', type=int, default=256)
+    parser.add_argument('--I0_high', type=float, default=1e5)
+    parser.add_argument('--I0_low', type=float, default=1e3)
+    parser.add_argument('--n_steps', type=int, default=5)
+    parser.add_argument('--bridge_sigma', type=float, default=0.0)
+    parser.add_argument('--epochs', type=int, default=80)
+    parser.add_argument('--batch_size', type=int, default=None)
+    parser.add_argument('--lsmr_iter', type=int, default=50)
+    parser.add_argument('--lsmr_damp', type=float, default=1e-2)
+    parser.add_argument('--ckpt', type=str, default=None,
+                        help='Path to checkpoint for eval or resume training')
+    parser.add_argument('--schedule', type=str, default='geometric',
+                        choices=['uniform', 'geometric', 'equal_improvement'],
+                        help='Time step schedule (default: geometric)')
+    parser.add_argument('--target', type=str, default='velocity',
+                        choices=['velocity', 'x0'],
+                        help='Prediction target: velocity or x0 (default: velocity)')
+    parser.add_argument('--base_dir', type=str, default=None,
+                        help='Override base directory for precomputed and output paths')
+    parser.add_argument('--sino_path', type=str, default=None,
+                        help='Override raw 2DeteCT sinogram directory')
+    args = parser.parse_args()
+
+    config = Config()
+    config.recon_size = args.recon_size
+    config.I0_high = args.I0_high
+    config.I0_low = args.I0_low
+    config.compute_alpha()
+    config.n_steps = args.n_steps
+    config.bridge_sigma = args.bridge_sigma
+    config.time_schedule = args.schedule
+    config.pred_target = args.target
+    config.epochs = args.epochs
+    config.lsmr_iter = args.lsmr_iter
+    config.lsmr_damp = args.lsmr_damp
+    if args.batch_size:
+        config.batch_size = args.batch_size
+
+    if args.base_dir:
+        config.precomputed_path = os.path.join(args.base_dir, 'precomputed')
+        config.output_path = os.path.join(args.base_dir, 'output')
+    if args.sino_path:
+        config.sino_path = args.sino_path
+
+    if config.time_schedule != 'uniform':
+        config.precomputed_path = config.precomputed_path.rstrip('/') + f'_{config.time_schedule}'
+        config.output_path = config.output_path.rstrip('/') + f'_{config.time_schedule}'
+
+    if config.pred_target == 'x0':
+        config.output_path = config.output_path.rstrip('/') + '_x0pred'
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    torch.manual_seed(config.seed)
+    np.random.seed(config.seed)
+
+    times = get_time_steps(config)
+    print("=" * 70)
+    print(f"2DeteCT Dose Bridge (Binomial Thinning) [{config.time_schedule} schedule]")
+    print("=" * 70)
+    print(f"  Recon: {config.recon_size}")
+    print(f"  I0_high: {config.I0_high:.0f}, I0_low: {config.I0_low:.0f}, alpha: {config.alpha:.6f}")
+    print(f"  LSMR: iter={config.lsmr_iter}, damp={config.lsmr_damp}")
+    print(f"  Bridge: n_steps={config.n_steps}, sigma={config.bridge_sigma}")
+    print(f"  Schedule: {config.time_schedule}")
+    print(f"  Prediction target: {config.pred_target}")
+    print(f"  Time grid: {np.array2string(times, precision=3)}")
+    print(f"  dt per step: {np.array2string(np.diff(times), precision=3)}")
+    print(f"  Dose levels: {[f'{config.I0_high * config.alpha**t:.0f}' for t in times]}")
+    print(f"  Precomputed: {config.precomputed_path}")
+    print(f"  Output: {config.output_path}")
+    print("=" * 70)
+
+    if args.precompute:
+        precompute_all(config, start=args.start, end=args.end)
+        return
+
+    if args.eval:
+        model = UNetWithTime(base_ch=config.base_channels, t_dim=config.t_dim).to(device)
+        ckpt_path = args.ckpt or os.path.join(config.output_path, 'dose_bridge_best.pth')
+        if os.path.exists(ckpt_path):
+            model.load_state_dict(torch.load(ckpt_path, map_location=device)['model'])
+            print(f"Loaded checkpoint: {ckpt_path}")
+        else:
+            print(f"WARNING: No checkpoint found at {ckpt_path}")
+        full_evaluate(model, config, device, n_samples=100, n_vis=8)
+        return
+
+    if args.train:
+        os.makedirs(config.output_path, exist_ok=True)
+
+        model = UNetWithTime(base_ch=config.base_channels, t_dim=config.t_dim).to(device)
+        n_params = sum(p.numel() for p in model.parameters()) / 1e6
+        print(f"Model: {n_params:.2f}M params")
+
+        start_epoch = 0
+        if args.ckpt and os.path.exists(args.ckpt):
+            ckpt = torch.load(args.ckpt, map_location=device)
+            model.load_state_dict(ckpt['model'])
+            start_epoch = ckpt.get('epoch', 0) + 1
+            print(f"Resuming from epoch {start_epoch}")
+
+        try:
+            train_ds = DoseBridgeDataset(config, 'train')
+            val_ds = DoseBridgeDataset(config, 'val')
+        except RuntimeError as e:
+            print(f"ERROR: {e}")
+            print("Run --precompute first!")
+            return
+
+        print(f"Train: {len(train_ds)}, Val: {len(val_ds)}")
+
+        train_loader = DataLoader(train_ds, batch_size=config.batch_size, shuffle=True,
+                                  num_workers=config.num_workers, pin_memory=True, drop_last=True)
+        val_loader = DataLoader(val_ds, batch_size=config.batch_size, shuffle=False,
+                                num_workers=config.num_workers, pin_memory=True)
+
+        optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, config.epochs)
+        scaler = GradScaler() if config.use_amp else None
+
+        best_val_loss = float('inf')
+        eval_history = []
+
+        for _ in range(start_epoch):
+            scheduler.step()
+
+        print("\nStarting training...")
+        for epoch in range(start_epoch, config.epochs):
+            train_loss = train_epoch(model, train_loader, optimizer, scaler, device, config.use_amp)
+            val_loss = validate(model, val_loader, device)
+            scheduler.step()
+
+            print(f"Epoch {epoch+1}/{config.epochs}: train={train_loss:.6f} val={val_loss:.6f} "
+                  f"lr={optimizer.param_groups[0]['lr']:.2e}")
+
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                torch.save({'model': model.state_dict(), 'epoch': epoch, 'val_loss': val_loss},
+                           os.path.join(config.output_path, 'dose_bridge_best.pth'))
+                print(f"  -> Best saved (val_loss={val_loss:.6f})")
+
+            if (epoch + 1) % 10 == 0:
+                torch.save({'model': model.state_dict(), 'epoch': epoch, 'val_loss': val_loss},
+                           os.path.join(config.output_path, f'dose_bridge_epoch{epoch+1}.pth'))
+
+            if HAS_ASTRA and ((epoch + 1) % 10 == 0 or epoch == 0):
+                res = quick_evaluate(model, config, device, epoch, n_samples=5)
+                if res:
+                    eval_history.append(res)
+                    with open(os.path.join(config.output_path, 'eval_history.json'), 'w') as f:
+                        json.dump(eval_history, f, indent=2)
+
+        if HAS_ASTRA:
+            print("\nFinal evaluation...")
+            best_path = os.path.join(config.output_path, 'dose_bridge_best.pth')
+            if os.path.exists(best_path):
+                model.load_state_dict(torch.load(best_path, map_location=device)['model'])
+            full_evaluate(model, config, device, n_samples=100, n_vis=8)
+
+    if not (args.precompute or args.train or args.eval):
+        print("No action. Use --precompute, --train, or --eval")
+
+
+if __name__ == "__main__":
+    main()

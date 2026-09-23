@@ -1,0 +1,13 @@
+numpy
+scipy
+torch
+torchvision
+scikit-image
+astra-toolbox
+tqdm
+matplotlib
+pillow
+bm3d
+piq
+lpips
+pymupdf
