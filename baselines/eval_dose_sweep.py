@@ -59,7 +59,7 @@ def registry(ds):
         for sched in ('uniform', 'equal_improvement'):
             for ep in (200, 300):
                 R[f'{arch}_bridge_{sched}_ep{ep}'] = (f'{OUT_ROOT}/{ds}_{arch}_bridge_{sched}_ep{ep}/best.pth', a)
-            R[f'{arch}_endpoint_{sched}_ep1000'] = (f'{OUT_ROOT}/{ds}_{arch}_endpoint_{sched}_ep1000/best.pth', a)
+            R[f'{arch}_endpoint_{sched}'] = (f'{OUT_ROOT}/{ds}_{arch}_endpoint_{sched}/best.pth', a)
         for frac in ('0.05', '0.1', '0.25'):
             for mode in ('bridge', 'endpoint', 'interp'):
                 R[f'{arch}_{mode}_uniform_frac{frac}'] = (f'{OUT_ROOT}/{ds}_{arch}_{mode}_uniform_frac{frac}/best.pth', a)
@@ -238,27 +238,27 @@ def main():
              ('nafnet_bridge_uniform@t', 'redcnn_endpoint_uniform'),
              ('redcnn_wide_bridge_uniform', 'redcnn_wide_endpoint_uniform'),
              ('redcnn_wide_t_bridge_uniform@t', 'redcnn_wide_endpoint_uniform'),
-             ('redcnn_bridge_uniform_ep200', 'redcnn_endpoint_uniform_ep1000'),
-             ('redcnn_bridge_uniform_ep300', 'redcnn_endpoint_uniform_ep1000'),
-             ('redcnn_bridge_uniform_ep300', 'redcnn_wide_endpoint_uniform'),
-             ('redcnn_bridge_equal_improvement_ep200', 'redcnn_endpoint_uniform_ep1000'),
-             ('redcnn_bridge_equal_improvement_ep200', 'endpoint_redcnn'),
-             ('redcnn_bridge_equal_improvement_ep200', 'redcnn_endpoint_equal_improvement_ep1000'),
-             ('redcnn_bridge_uniform_ep200', 'redcnn_endpoint_uniform'),
-             ('redcnn_wide_bridge_uniform_ep200', 'redcnn_wide_endpoint_uniform_ep1000'),
-             ('redcnn_wide_bridge_uniform_ep200', 'redcnn_wide_endpoint_uniform'),
+             ('redcnn_bridge_uniform', 'redcnn_endpoint_uniform_alt'),
+             ('redcnn_bridge_uniform_alt', 'redcnn_endpoint_uniform_alt'),
+             ('redcnn_bridge_uniform_alt', 'redcnn_wide_endpoint_uniform'),
+             ('redcnn_bridge_equal_improvement', 'redcnn_endpoint_uniform_alt'),
+             ('redcnn_bridge_equal_improvement', 'endpoint_redcnn'),
+             ('redcnn_bridge_equal_improvement', 'redcnn_endpoint_equal_improvement_alt'),
+             ('redcnn_bridge_uniform', 'redcnn_endpoint_uniform'),
+             ('redcnn_wide_bridge_uniform', 'redcnn_wide_endpoint_uniform'),
+             ('redcnn_wide_bridge_uniform', 'redcnn_wide_endpoint_uniform'),
              ('redcnn_wide_t_bridge_equal_improvement@t', 'redcnn_wide_endpoint_uniform'),
              ('unet_res_bridge_uniform@t', 'unet_res_interp_uniform@t'),
              ('unet_res_bridge_uniform@t', 'unet_res_rep5@t1')]
-    OURS = ['unet_res_bridge_uniform_aug_ema_ep160@t', 'unet_res_bridge_uniform_aug_ema_ep320@t',
-            'unet_res_bridge_uniform_aug_ema_lr0.0002_ep160@t', 'unet_res96_bridge_uniform_aug_ema_ep160@t',
-            'unet_res_bridge_uniform_aug_ema_bs32_ep160@t', 'rep4_unet_res_bridge_uniform_aug_ema@t',
-            'rep4_unet_res_bridge_uniform_aug_ema_lr0.0002_ep80@t', 'rep4_unet_res96_bridge_uniform_aug_ema_lr0.0002_ep80@t',
-            'unet_res96_bridge_uniform_aug_ema_lr0.0002_ep160@t']
-    BASE = ['redcnn_endpoint_uniform_aug_ema_ep1000', 'redcnn_wide_endpoint_uniform_aug_ema_ep1000',
-            'unet_res_endpoint_uniform_aug_ema_ep800@t1', 'unet_res_endpoint_uniform_aug_ema@t1',
-            'drunet_endpoint_uniform_aug_ema_ep1000@t1', 'dncnn_endpoint_uniform_aug_ema_ep1000',
-            'nafnet_endpoint_uniform_aug_ema_lr0.001_ep1000@t1', 'edcnn_endpoint_uniform_aug_ema_ep1000']
+    OURS = ['unet_res_bridge_uniform_aug_ema@t', 'unet_res_bridge_uniform_aug_ema@t_alt',
+            'unet_res_bridge_uniform_aug_ema_lr0.0002@t', 'unet_res96_bridge_uniform_aug_ema@t',
+            'unet_res_bridge_uniform_aug_ema_bs32@t', 'rep4_unet_res_bridge_uniform_aug_ema@t',
+            'rep4_unet_res_bridge_uniform_aug_ema_lr0.0002@t_alt', 'rep4_unet_res96_bridge_uniform_aug_ema_lr0.0002@t',
+            'unet_res96_bridge_uniform_aug_ema_lr0.0002@t']
+    BASE = ['redcnn_endpoint_uniform_aug_ema', 'redcnn_wide_endpoint_uniform_aug_ema',
+            'unet_res_endpoint_uniform_aug_ema@t1_alt', 'unet_res_endpoint_uniform_aug_ema@t1',
+            'drunet_endpoint_uniform_aug_ema@t1', 'dncnn_endpoint_uniform_aug_ema',
+            'nafnet_endpoint_uniform_aug_ema_lr0.001@t1', 'edcnn_endpoint_uniform_aug_ema']
     pairs += [(o, b) for o in OURS for b in BASE]
     for frac in ('0.05', '0.1', '0.25'):
         pairs += [(f'unet_res_bridge_uniform_frac{frac}@t', f'unet_res_endpoint_uniform_frac{frac}@t1'),

@@ -166,7 +166,7 @@ def main():
     ap.add_argument('--schedule', default='uniform',
                     choices=['uniform', 'geometric', 'equal_improvement'])
     ap.add_argument('--seed', type=int, default=42)
-    ap.add_argument('--epochs', type=int, default=80)
+    ap.add_argument('--epochs', type=int, required=True)
     ap.add_argument('--batch_size', type=int, default=64)
     ap.add_argument('--lr', type=float, default=1e-4)
     ap.add_argument('--smoke', action='store_true')

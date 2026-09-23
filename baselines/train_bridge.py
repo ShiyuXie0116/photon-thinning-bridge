@@ -599,8 +599,8 @@ def main():
     ap.add_argument('--schedule', default='uniform',
                     choices=['uniform', 'geometric', 'equal_improvement'])
     ap.add_argument('--seed', type=int, default=42)
-    ap.add_argument('--epochs', type=int, default=None,
-                    help='default: 80 for bridge, 400 for endpoint (matched updates)')
+    ap.add_argument('--epochs', type=int, required=True,
+                    help='number of training epochs')
     ap.add_argument('--batch_size', type=int, default=64)
     ap.add_argument('--lr', type=float, default=1e-4)
     ap.add_argument('--tag', default='')
@@ -631,8 +631,6 @@ def main():
     ap.add_argument('--ema', type=float, default=0.0, help='EMA decay for the evaluated/saved weights (0 = off, e.g. 0.999)')
     ap.add_argument('--blind_t', action='store_true', help='dose-blind control: feed t=1 to a time-conditioned arch at train AND test time (same data, no dose input)')
     args = ap.parse_args()
-    if args.epochs is None:
-        args.epochs = 80 if args.mode == 'bridge' else 400
 
     device = torch.device('cuda')
     torch.manual_seed(args.seed)

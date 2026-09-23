@@ -2,6 +2,8 @@
 
 Code for the photon-thinning bridge, a diffusion-style bridge whose forward process is the physics of dose reduction: detected photons are removed by binomial thinning, so every state of the process is distributed as a scan acquired at a lower dose. A fixed reconstruction operator turns the thinned counts into a trajectory of valid CT images, and a dose-conditioned network learns to reverse it. Because the bridge time is a physical relative exposure, one checkpoint covers a calibrated range of doses.
 
+Trained models: https://huggingface.co/shiyuxie/photon-thinning-bridge
+
 ![Forward process](assets/trajectory.png)
 
 *Forward process on a Mayo LDCT slice (alpha = 0.1). Each panel is a reconstruction at the dose written above it, from the full-dose scan to the 10%-dose input.*
@@ -39,7 +41,7 @@ Out-of-simulation data, trained on simulated thinning data only: the official Ma
 | CoreDiff | 38.72 | 0.940 | 0.669 | 29.89 | 0.854 | 0.624 |
 | **Ours** | **39.57** | **0.947** | **0.695** | **30.22** | **0.872** | **0.671** |
 
-Across the dose sweep (2DeteCT 1-40%, LDCT 10-36%) one bridge checkpoint, queried with the known dose, stays above the best network retrained at each dose by +0.09 to +0.43 dB on 2DeteCT and +0.11 to +0.14 dB on LDCT, while networks trained at a single dose lose up to 8 dB away from it.
+Across the dose sweep (2DeteCT 1-40%, LDCT 10-36%) one bridge checkpoint, queried with the known dose, stays above the best network retrained at each dose by +0.09 to +0.43 dB on 2DeteCT and +0.11 to +0.14 dB on LDCT. At 40% dose on 2DeteCT, networks trained at 1% dose fall about 8 dB below the low-dose input.
 
 ![LDCT reconstructions](assets/recon_ldct.png)
 
@@ -111,15 +113,15 @@ Train the bridge network (96 base channels on 2DeteCT, 64 on LDCT):
 
 ```bash
 python baselines/train_bridge.py --arch hybrid96 --mode bridge --experiment 2detect_rep4 \
-       --schedule uniform --aug --ema --lr 2e-4 --epochs 80
+       --schedule uniform --aug --ema --lr 2e-4
 python baselines/train_bridge.py --arch hybrid --mode bridge --experiment ldct_rep4 \
-       --schedule uniform --aug --ema --lr 2e-4 --epochs 21
+       --schedule uniform --aug --ema --lr 2e-4
 ```
 
 Train a single-dose baseline with the same recipe, for instance RED-CNN:
 
 ```bash
-python baselines/train_bridge.py --arch redcnn --mode endpoint --experiment 2detect --epochs 100
+python baselines/train_bridge.py --arch redcnn --mode endpoint --experiment 2detect
 ```
 
 Evaluate and build the tables:
@@ -134,18 +136,6 @@ python baselines/make_tables.py
 
 Figures are produced by `baselines/figs/make_fig_trajectory_lsmr.py` and
 `baselines/figs/make_fig_recon_rdm.py`.
-
-## Citation
-
-```bibtex
-@inproceedings{xie2027photon,
-  title     = {A Photon-Thinning Bridge for Low-Dose {CT} Reconstruction},
-  author    = {Xie, Shiyu and Entezari, Alireza and Banerjee, Arunava},
-  booktitle = {IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP)},
-  year      = {2027},
-  note      = {Under review}
-}
-```
 
 ## License
 

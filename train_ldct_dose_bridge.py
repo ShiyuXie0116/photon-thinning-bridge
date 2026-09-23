@@ -62,7 +62,7 @@ class Config:
     t_dim = 128
 
     batch_size = 64
-    epochs = 80
+    epochs = None
     lr = 1e-4
     weight_decay = 1e-4
     train_ratio = 0.85
@@ -681,7 +681,7 @@ def main():
     parser.add_argument('--I0_high', type=float, default=1e5)
     parser.add_argument('--I0_low', type=float, default=1e4)
     parser.add_argument('--n_steps', type=int, default=5)
-    parser.add_argument('--epochs', type=int, default=80)
+    parser.add_argument('--epochs', type=int, required=True)
     parser.add_argument('--batch_size', type=int, default=None)
     parser.add_argument('--ckpt', type=str, default=None)
     parser.add_argument('--schedule', type=str, default='geometric',

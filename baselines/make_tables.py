@@ -51,16 +51,16 @@ ROWS = [
     ('BM3D (oracle $\\sigma$) \\cite{dabov2007bm3d}', ['bm3d'], ['bm3d']),
     ('Diffusion prior, DDIM \\cite{song2021ddim}', ['ddim_denoise'], ['ddim_denoise']),
     ('CoreDiff \\cite{gao2024corediff}', ['coredif_aug', 'coredif'], ['coredif_aug', 'coredif']),
-    ('DnCNN \\cite{zhang2017dncnn}', ['dncnn_endpoint_uniform_aug_ema_ep1000', 'dncnn_endpoint_uniform'], ['dncnn_endpoint_equal_improvement_aug_ema_ep1000']),
-    ('EDCNN \\cite{liang2020edcnn}', ['edcnn_endpoint_uniform_aug_ema_ep1000'], ['edcnn_endpoint_equal_improvement_aug_ema_ep1000']),
-    ('NAFNet \\cite{chen2022nafnet}', ['nafnet_endpoint_uniform_aug_ema_lr0.001_ep1000@t1', 'nafnet_endpoint_uniform@t1'], ['nafnet_endpoint_equal_improvement_aug_ema_lr0.001_ep1000@t1']),
-    ('DRUNet \\cite{zhang2021drunet}', ['drunet_endpoint_uniform_aug_ema_ep1000@t1', 'drunet_endpoint_uniform@t1'], ['drunet_endpoint_equal_improvement_aug_ema_ep1000@t1']),
-    ('U-Net, single dose \\cite{jin2017deep}', ['rep4_unet_res_endpoint_uniform_aug_ema_lr0.0002_v2@t1', 'unet_res_endpoint_uniform_aug_ema_ep800@t1', 'unet_res_endpoint_uniform_aug_ema@t1', 'unet_res_endpoint_uniform@t1'],
-     ['unet_res_endpoint_uniform_aug_ema_ep1000@t1', 'unet_res_endpoint_uniform@t1']),
-    ('RED-CNN \\cite{chen2017low}', ['redcnn_endpoint_uniform_aug_ema_ep1000', 'redcnn_endpoint_uniform_ep1000', 'redcnn_endpoint_uniform'],
-     ['redcnn_endpoint_equal_improvement_aug_ema_ep1000', 'redcnn_endpoint_equal_improvement_ep1000', 'endpoint_redcnn']),
-    ('RED-CNN-wide', ['redcnn_wide_endpoint_uniform_aug_ema_ep1000', 'redcnn_wide_endpoint_uniform_ep1000'],
-     ['redcnn_wide_endpoint_equal_improvement_aug_ema_ep1000', 'redcnn_wide_endpoint_equal_improvement_ep1000']),
+    ('DnCNN \\cite{zhang2017dncnn}', ['dncnn_endpoint_uniform_aug_ema', 'dncnn_endpoint_uniform'], ['dncnn_endpoint_equal_improvement_aug_ema']),
+    ('EDCNN \\cite{liang2020edcnn}', ['edcnn_endpoint_uniform_aug_ema'], ['edcnn_endpoint_equal_improvement_aug_ema']),
+    ('NAFNet \\cite{chen2022nafnet}', ['nafnet_endpoint_uniform_aug_ema_lr0.001@t1', 'nafnet_endpoint_uniform@t1'], ['nafnet_endpoint_equal_improvement_aug_ema_lr0.001@t1']),
+    ('DRUNet \\cite{zhang2021drunet}', ['drunet_endpoint_uniform_aug_ema@t1', 'drunet_endpoint_uniform@t1'], ['drunet_endpoint_equal_improvement_aug_ema@t1']),
+    ('U-Net, single dose \\cite{jin2017deep}', ['rep4_unet_res_endpoint_uniform_aug_ema_lr0.0002_v2@t1', 'unet_res_endpoint_uniform_aug_ema@t1_alt', 'unet_res_endpoint_uniform_aug_ema@t1', 'unet_res_endpoint_uniform@t1'],
+     ['unet_res_endpoint_uniform_aug_ema@t1', 'unet_res_endpoint_uniform@t1']),
+    ('RED-CNN \\cite{chen2017low}', ['redcnn_endpoint_uniform_aug_ema', 'redcnn_endpoint_uniform_alt', 'redcnn_endpoint_uniform'],
+     ['redcnn_endpoint_equal_improvement_aug_ema', 'redcnn_endpoint_equal_improvement_alt', 'endpoint_redcnn']),
+    ('RED-CNN-wide', ['redcnn_wide_endpoint_uniform_aug_ema', 'redcnn_wide_endpoint_uniform'],
+     ['redcnn_wide_endpoint_equal_improvement_aug_ema', 'redcnn_wide_endpoint_equal_improvement']),
 ]
 BASE_PUB = os.environ.get('BASE_PUB') == '1'
 if BASE_PUB:
@@ -74,10 +74,10 @@ if BASE_PUB:
         ('NAFNet \\cite{chen2022nafnet}', ['nafnet_endpoint_uniform@t1'], ['nafnet_endpoint_equal_improvement@t1']),
         ('DRUNet \\cite{zhang2021drunet}', ['drunet_endpoint_uniform@t1'], ['drunet_endpoint_equal_improvement@t1']),
         ('U-Net, single dose \\cite{jin2017deep}', ['unet_res_endpoint_uniform@t1'], ['unet_res_endpoint_uniform@t1']),
-        ('RED-CNN \\cite{chen2017low}', ['redcnn_endpoint_uniform'], ['redcnn_endpoint_equal_improvement', 'redcnn_endpoint_equal_improvement_ep1000']),
+        ('RED-CNN \\cite{chen2017low}', ['redcnn_endpoint_uniform'], ['redcnn_endpoint_equal_improvement', 'redcnn_endpoint_equal_improvement_alt']),
         ('WGAN-VGG \\cite{yang2018low}', ['wganvgg_endpoint_uniform_pub', 'wganvgg_endpoint_uniform_it30k', 'wganvgg_endpoint_uniform'], ['wganvgg_endpoint_equal_improvement_pub', 'wganvgg_endpoint_equal_improvement']),
         ('MAP-NN \\cite{shan2019competitive}', ['mapnn_endpoint_uniform'], ['mapnn_endpoint_equal_improvement']),
-        ('Restormer \\cite{zamir2022restormer}', ['restormer_endpoint_uniform'], ['restormer_endpoint_equal_improvement_ep400', 'restormer_endpoint_equal_improvement']),
+        ('Restormer \\cite{zamir2022restormer}', ['restormer_endpoint_uniform'], ['restormer_endpoint_equal_improvement_alt', 'restormer_endpoint_equal_improvement']),
     ]
 BASE_TAG = os.environ.get('BASE_TAG', '')
 def _tagged(keys, ldct):
@@ -88,7 +88,7 @@ def _tagged(keys, ldct):
         base, _, suf = k.partition('@')
         if not (base.startswith('') and '_endpoint_' in base) or 'wganvgg' in base:
             out.append(k); continue
-        if base.endswith('_ep1000'):
+        if base.endswith(''):
             base = base[:-7]
         if ldct:
             base = base.replace('_endpoint_uniform', '_endpoint_equal_improvement')
@@ -99,14 +99,14 @@ def _tagged(keys, ldct):
 if BASE_PUB and BASE_TAG:
     ROWS = [(lab, _tagged(a, False), _tagged(b, True)) for lab, a, b in ROWS]
 OURS_2D = ([os.environ['OURS2D_KEY']] if os.environ.get('OURS2D_KEY') else []) + \
-          ['rep4_unet_res96_bridge_uniform_aug_ema_lr0.0002_ep80v2@t',
-           'unet_res96_bridge_uniform_aug_ema_lr0.0002_ep320@t', 'rep4_unet_res_bridge_uniform_aug_ema_lr0.0002_ep80v2@t',
-           'rep4_unet_res96_bridge_uniform_aug_ema_lr0.0002_ep80@t', 'rep4_unet_res_bridge_uniform_aug_ema_lr0.0002_ep80@t',
-           'unet_res96_bridge_uniform_aug_ema_lr0.0002_ep160@t', 'unet_res_bridge_uniform_aug_ema_lr0.0002_ep160@t',
-           'unet_res_bridge_uniform_aug_ema_bs32_ep160@t', 'unet_res_bridge_uniform_aug_ema_ep160@t', 'unet_res_bridge_uniform@t']
+          ['rep4_unet_res96_bridge_uniform_aug_ema_lr0.0002v2@t',
+           'unet_res96_bridge_uniform_aug_ema_lr0.0002@t_alt', 'rep4_unet_res_bridge_uniform_aug_ema_lr0.0002v2@t',
+           'rep4_unet_res96_bridge_uniform_aug_ema_lr0.0002@t', 'rep4_unet_res_bridge_uniform_aug_ema_lr0.0002@t_alt',
+           'unet_res96_bridge_uniform_aug_ema_lr0.0002@t', 'unet_res_bridge_uniform_aug_ema_lr0.0002@t',
+           'unet_res_bridge_uniform_aug_ema_bs32@t', 'unet_res_bridge_uniform_aug_ema@t', 'unet_res_bridge_uniform@t']
 OURS_LD = ([os.environ['OURSLD_KEY']] if os.environ.get('OURSLD_KEY') else []) + \
-          ['unet_res_bridge_uniform_aug_ema_lr0.0002_ep160@t',
-           'unet_res_bridge_uniform_aug_ema_ep160@t', 'unet_res_bridge_uniform@t']
+          ['unet_res_bridge_uniform_aug_ema_lr0.0002@t',
+           'unet_res_bridge_uniform_aug_ema@t', 'unet_res_bridge_uniform@t']
 
 
 def main():
@@ -185,13 +185,13 @@ def main():
                     out[lab] = (min(r), float(np.mean(r)), sum(x < 0 for x in g), len(g)); break
         return out
     T2 = [('\\textbf{Ours}' if os.environ.get('OURS_5STEP_ONLY') == '1' else '\\textbf{Ours} (one checkpoint)', ([o2k] if o2k else []) + OURS_2D, ([olk] if olk else []) + OURS_LD),
-          ('RED-CNN, single dose', ['redcnn_endpoint_uniform_aug_ema_ep1000', 'redcnn_endpoint_uniform_ep1000'], ['redcnn_endpoint_equal_improvement_aug_ema_ep1000', 'redcnn_endpoint_equal_improvement_ep1000', 'endpoint_redcnn']),
-          ('DRUNet, single dose', ['drunet_endpoint_uniform_aug_ema_ep1000@t1', 'drunet_endpoint_uniform@t1'], ['drunet_endpoint_equal_improvement_aug_ema_ep1000@t1']),
-          ('U-Net, single dose', ['unet_res_endpoint_uniform_aug_ema_ep800@t1', 'unet_res_endpoint_uniform@t1'], ['unet_res_endpoint_uniform_aug_ema_ep1000@t1', 'unet_res_endpoint_uniform@t1']),
+          ('RED-CNN, single dose', ['redcnn_endpoint_uniform_aug_ema', 'redcnn_endpoint_uniform_alt'], ['redcnn_endpoint_equal_improvement_aug_ema', 'redcnn_endpoint_equal_improvement_alt', 'endpoint_redcnn']),
+          ('DRUNet, single dose', ['drunet_endpoint_uniform_aug_ema@t1', 'drunet_endpoint_uniform@t1'], ['drunet_endpoint_equal_improvement_aug_ema@t1']),
+          ('U-Net, single dose', ['unet_res_endpoint_uniform_aug_ema@t1_alt', 'unet_res_endpoint_uniform@t1'], ['unet_res_endpoint_uniform_aug_ema@t1', 'unet_res_endpoint_uniform@t1']),
           ('BM3D (oracle $\\sigma$)', ['bm3d'], ['bm3d'])]
     if BASE_PUB:
         T2 = [('\\textbf{Ours}' if os.environ.get('OURS_5STEP_ONLY') == '1' else '\\textbf{Ours} (one checkpoint)', ([o2k] if o2k else []) + OURS_2D, ([olk] if olk else []) + OURS_LD),
-              ('RED-CNN, single dose', ['redcnn_endpoint_uniform'], ['redcnn_endpoint_equal_improvement', 'redcnn_endpoint_equal_improvement_ep1000']),
+              ('RED-CNN, single dose', ['redcnn_endpoint_uniform'], ['redcnn_endpoint_equal_improvement', 'redcnn_endpoint_equal_improvement_alt']),
               ('DRUNet, single dose', ['drunet_endpoint_uniform@t1'], ['drunet_endpoint_equal_improvement@t1']),
               ('U-Net, single dose', ['unet_res_endpoint_uniform@t1'], ['unet_res_endpoint_uniform@t1']),
               ('BM3D (oracle $\\sigma$)', ['bm3d'], ['bm3d'])]
@@ -219,9 +219,9 @@ def main():
             if k in S: return S[k]
         return None
     T3 = [('Low-dose input', ['low_dose'], ['low_dose']),
-          ('U-Net, single dose', ['endpoint_unet_res_aug_ep1000', 'endpoint_unet_res'], ['endpoint_unet_res_effI0_aug_ep1000', 'endpoint_unet_res_effI0']),
-          ('RED-CNN', ['endpoint_redcnn_aug_ep1000', 'endpoint_redcnn_ep1000', 'endpoint_redcnn'], ['endpoint_redcnn_effI0_aug_ep1000', 'endpoint_redcnn_effI0_ep1000', 'endpoint_redcnn_effI0']),
-          ('RED-CNN-wide', ['endpoint_redcnn_wide_aug_ep1000', 'endpoint_redcnn_wide_ep1000'], ['endpoint_redcnn_wide_effI0_aug_ep1000', 'endpoint_redcnn_wide_effI0_ep1000']),
+          ('U-Net, single dose', ['endpoint_unet_res_aug', 'endpoint_unet_res'], ['endpoint_unet_res_effI0_aug', 'endpoint_unet_res_effI0']),
+          ('RED-CNN', ['endpoint_redcnn_aug', 'endpoint_redcnn', 'endpoint_redcnn'], ['endpoint_redcnn_effI0_aug', 'endpoint_redcnn_effI0_alt', 'endpoint_redcnn_effI0']),
+          ('RED-CNN-wide', ['endpoint_redcnn_wide_aug', 'endpoint_redcnn_wide'], ['endpoint_redcnn_wide_effI0_aug', 'endpoint_redcnn_wide_effI0']),
           ('\\textbf{Ours}, 5-step posterior mean', ['__sampler_ld__'], ['__sampler__']),
           ('\\textbf{Ours}, single step', (['ours_hybrid_rep4_single'] if os.environ.get('OURS_HYBRID') == '1' else []) +
            ['ours_unet_res_aug_lr2e4_single', 'ours_unet_res_aug_single', 'bridge_unet_res_single'],
@@ -231,7 +231,7 @@ def main():
     if BASE_PUB:
         T3 = [('Low-dose input', ['low_dose'], ['low_dose']),
               ('U-Net, single dose', ['endpoint_unet_res'], ['endpoint_unet_res_effI0']),
-              ('RED-CNN', ['endpoint_redcnn_r6ep400', 'endpoint_redcnn_ep1000', 'endpoint_redcnn'], ['endpoint_redcnn_effI0', 'endpoint_redcnn_effI0_ep1000']),
+              ('RED-CNN', ['endpoint_redcnn_r6ep400', 'endpoint_redcnn', 'endpoint_redcnn'], ['endpoint_redcnn_effI0', 'endpoint_redcnn_effI0_alt']),
               ('\\textbf{Ours}, 5-step posterior mean', ['__sampler_ld__'], ['__sampler__']),
               ('\\textbf{Ours}, single step', (['ours_hybrid_rep4_single'] if os.environ.get('OURS_HYBRID') == '1' else []) +
                ['ours_unet_res_aug_lr2e4_single', 'ours_unet_res_aug_single', 'bridge_unet_res_single'],

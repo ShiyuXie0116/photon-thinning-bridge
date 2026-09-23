@@ -14,19 +14,19 @@ C = {'bridge_unet': '#2a78d6', 'bridge_redcnn': '#eb6834', 'ep_redcnn': '#1baf7a
      'spec': '#0b0b0b', 'grid': '#e6e5e1', 'text': '#0b0b0b', 'muted': '#52514e'}
 
 SERIES = [
-    (((os.environ['OURS2D_KEY'] + '|') if os.environ.get('OURS2D_KEY') else '') + 'rep4_unet_res96_bridge_uniform_aug_ema_lr0.0002_ep80v2@t|rep4_unet_res_bridge_uniform_aug_ema_lr0.0002_ep80v2@t|unet_res96_bridge_uniform_aug_ema_lr0.0002_ep160@t|unet_res_bridge_uniform_aug_ema_ep160@t|unet_res_bridge_uniform@t',
+    (((os.environ['OURS2D_KEY'] + '|') if os.environ.get('OURS2D_KEY') else '') + 'rep4_unet_res96_bridge_uniform_aug_ema_lr0.0002v2@t|rep4_unet_res_bridge_uniform_aug_ema_lr0.0002v2@t|unet_res96_bridge_uniform_aug_ema_lr0.0002@t|unet_res_bridge_uniform_aug_ema@t|unet_res_bridge_uniform@t',
      'Ours: one bridge checkpoint', C['bridge_unet'], '-', 'o'),
-    ('redcnn_wide_endpoint_uniform_aug_ema_ep1000|redcnn_wide_endpoint_uniform_ep1000', 'RED-CNN-wide, single dose', C['bridge_redcnn'], '--', 's'),
-    ('redcnn_endpoint_uniform_aug_ema_ep1000|redcnn_endpoint_uniform_ep1000|redcnn_endpoint_uniform', 'RED-CNN, single dose', C['ep_redcnn'], '--', '^'),
-    ('unet_res_endpoint_uniform_aug_ema_ep800@t1|unet_res_endpoint_uniform_aug_ema@t1|unet_res_endpoint_uniform@t1', 'U-Net, single dose', C['ep_unet'], '--', 'v'),
+    ('redcnn_wide_endpoint_uniform_aug_ema|redcnn_wide_endpoint_uniform', 'RED-CNN-wide, single dose', C['bridge_redcnn'], '--', 's'),
+    ('redcnn_endpoint_uniform_aug_ema|redcnn_endpoint_uniform_alt|redcnn_endpoint_uniform', 'RED-CNN, single dose', C['ep_redcnn'], '--', '^'),
+    ('unet_res_endpoint_uniform_aug_ema@t1_alt|unet_res_endpoint_uniform_aug_ema@t1|unet_res_endpoint_uniform@t1', 'U-Net, single dose', C['ep_unet'], '--', 'v'),
     ('bm3d', 'BM3D (dose-oracle $\\sigma$)', C['muted'], ':', 'd'),
 ]
 SERIES_LDCT = [
-    (((os.environ['OURSLD_KEY'] + '|') if os.environ.get('OURSLD_KEY') else '') + 'unet_res_bridge_uniform_aug_ema_lr0.0002_ep160@t|unet_res_bridge_uniform_aug_ema_ep160@t|unet_res_bridge_uniform@t',
+    (((os.environ['OURSLD_KEY'] + '|') if os.environ.get('OURSLD_KEY') else '') + 'unet_res_bridge_uniform_aug_ema_lr0.0002@t|unet_res_bridge_uniform_aug_ema@t|unet_res_bridge_uniform@t',
      'Ours: one bridge checkpoint', C['bridge_unet'], '-', 'o'),
-    ('redcnn_wide_endpoint_equal_improvement_aug_ema_ep1000|redcnn_wide_endpoint_equal_improvement_ep1000', 'RED-CNN-wide, single dose', C['bridge_redcnn'], '--', 's'),
-    ('redcnn_endpoint_equal_improvement_aug_ema_ep1000|redcnn_endpoint_equal_improvement_ep1000|endpoint_redcnn', 'RED-CNN, single dose', C['ep_redcnn'], '--', '^'),
-    ('unet_res_endpoint_uniform_aug_ema_ep1000@t1|unet_res_endpoint_uniform@t1', 'U-Net, single dose', C['ep_unet'], '--', 'v'),
+    ('redcnn_wide_endpoint_equal_improvement_aug_ema|redcnn_wide_endpoint_equal_improvement', 'RED-CNN-wide, single dose', C['bridge_redcnn'], '--', 's'),
+    ('redcnn_endpoint_equal_improvement_aug_ema|redcnn_endpoint_equal_improvement_alt|endpoint_redcnn', 'RED-CNN, single dose', C['ep_redcnn'], '--', '^'),
+    ('unet_res_endpoint_uniform_aug_ema@t1|unet_res_endpoint_uniform@t1', 'U-Net, single dose', C['ep_unet'], '--', 'v'),
     ('bm3d', 'BM3D (dose-oracle $\\sigma$)', C['muted'], ':', 'd'),
 ]
 
@@ -40,7 +40,7 @@ if os.environ.get('BASE_PUB') == '1':
             sched = 'uniform' if ds == '2detect' else 'equal_improvement'
             if lab.startswith('RED-CNN'):
                 key = (f'redcnn_endpoint_{sched}_{tag}' if tag else
-                       'redcnn_endpoint_uniform' if ds == '2detect' else 'redcnn_endpoint_equal_improvement|redcnn_endpoint_equal_improvement_ep1000')
+                       'redcnn_endpoint_uniform' if ds == '2detect' else 'redcnn_endpoint_equal_improvement|redcnn_endpoint_equal_improvement_alt')
             elif lab.startswith('U-Net'):
                 key = f'unet_res_endpoint_{sched}_{tag}@t1' if tag else 'unet_res_endpoint_uniform@t1'
             out.append((key, lab, col, ls, mk))

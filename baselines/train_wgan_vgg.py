@@ -49,7 +49,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--experiment', required=True, choices=list(ALPHAS.keys()))
     ap.add_argument('--schedule', default='uniform')
-    ap.add_argument('--epochs', type=int, default=100)
+    ap.add_argument('--epochs', type=int, required=True)
     ap.add_argument('--batch_size', type=int, default=16)
     ap.add_argument('--lr', type=float, default=1e-4)
     ap.add_argument('--n_critic', type=int, default=4)

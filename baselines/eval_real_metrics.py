@@ -23,7 +23,7 @@ ORDER = ['psnr', 'ssim', 'rmse', 'mae', 'msssim', 'fsim', 'vif', 'gmsd', 'haarps
 def table_methods(ds):
     O = OUT_ROOT
     if ds == 'ldct':
-        E = 'ldct_{}_endpoint_equal_improvement_ep100'
+        E = 'ldct_{}_endpoint_equal_improvement'
         rows = [('DnCNN', f'{O}/{E.format("dncnn")}/best.pth', 'r6:dncnn'),
                 ('EDCNN', f'{O}/{E.format("edcnn")}/best.pth', 'r6:edcnn'),
                 ('NAFNet', f'{O}/{E.format("nafnet")}/best.pth', 'r6:nafnet'),
@@ -33,11 +33,11 @@ def table_methods(ds):
                 ('WGAN-VGG', f'{O}/ldct_wganvgg_endpoint_equal_improvement_pub/best.pth', 'r6:wganvgg'),
                 ('U-Net, single dose', f'{O}/{E.format("unet_res")}/best.pth', 'unet_res_ep'),
                 ('RED-CNN', f'{O}/{E.format("redcnn")}/best.pth', 'redcnn_endpoint')]
-        ours = dict(ckpt=f'{O}/ldct_rep4_hybrid_bridge_uniform_aug_ema_lr0.0002_ep21/best.pth', arch='hybrid',
+        ours = dict(ckpt=f'{O}/ldct_rep4_hybrid_bridge_uniform_aug_ema_lr0.0002/best.pth', arch='hybrid',
                     schedule='uniform', alpha=0.1, t_hat=f'{O}/eval_real_ldct_tsweep/t_hat_ldct.json',
                     pid_of=lambda sid: sid.split('_s')[0])
     else:
-        E = '2detect_effI0_{}_endpoint_geometric_ep100'
+        E = '2detect_effI0_{}_endpoint_geometric'
         rows = [('DnCNN', f'{O}/{E.format("dncnn")}/best.pth', 'r6:dncnn'),
                 ('EDCNN', f'{O}/{E.format("edcnn")}/best.pth', 'r6:edcnn'),
                 ('NAFNet', f'{O}/{E.format("nafnet")}/best.pth', 'r6:nafnet'),
@@ -47,7 +47,7 @@ def table_methods(ds):
                 ('WGAN-VGG', f'{O}/2detect_effI0_wganvgg_endpoint_geometric_pub/best.pth', 'r6:wganvgg'),
                 ('U-Net, single dose', f'{O}/{E.format("unet_res")}/best.pth', 'unet_res_ep'),
                 ('RED-CNN', f'{O}/{E.format("redcnn")}/best.pth', 'redcnn_endpoint')]
-        ours = dict(ckpt=f'{O}/2detect_effI0_hybrid96_bridge_geometric_aug_ema_lr0.0002_ep160/best.pth', arch='hybrid96',
+        ours = dict(ckpt=f'{O}/2detect_effI0_hybrid96_bridge_geometric_aug_ema_lr0.0002/best.pth', arch='hybrid96',
                     schedule='geometric', alpha=425.0 / 15000.0, t_hat=f'{O}/eval_real_ldct_tsweep/t_hat_2detect.json',
                     pid_of=lambda sid: 'all')
     return rows, ours
