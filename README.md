@@ -135,7 +135,7 @@ python baselines/make_tables.py
 ```
 
 Figures are produced by `baselines/figs/make_fig_trajectory_lsmr.py` and
-`baselines/figs/make_fig_recon_rdm.py`.
+`baselines/figs/make_fig_recon.py`.
 
 ## License
 

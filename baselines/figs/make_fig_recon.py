@@ -227,7 +227,7 @@ def make_row(ds, sid, args, out_dir):
         if name != 'Reference':
             li += 1
         fig.text(x0f + cell_w / W / 2, y0f - 0.45 * bot / H, lab, ha='center', va='center', fontsize=args.fs_label, fontweight='bold')
-    base = os.path.join(out_dir, f'fig_recon_rdm_{ds}_{sid}{args.out_suffix}')
+    base = os.path.join(out_dir, f'fig_recon_{ds}_{sid}{args.out_suffix}')
     fig.savefig(base + '.png', dpi=args.dpi, pad_inches=0.01, bbox_inches='tight'); fig.savefig(base + '.pdf', dpi=args.dpi, pad_inches=0.01, bbox_inches='tight'); plt.close(fig)
     info = {'sid': sid, 'roi_cyan': rc, 'roi_mag': rm, 'windows': {'main': wm, 'cyan': wc, 'mag': wg},
             'metrics': {n: m for n, m in zip(names, metrics) if m}, 'roi_psnr_mag_cyan': vis}
@@ -270,7 +270,7 @@ def main():
         make_row(args.dataset, sid, args, args.out_dir)
     if args.sheet:
         from PIL import ImageDraw
-        ims = [Image.open(os.path.join(args.out_dir, f'fig_recon_rdm_{args.dataset}_{sid}{args.out_suffix}.png')).convert('RGB') for sid in sids]
+        ims = [Image.open(os.path.join(args.out_dir, f'fig_recon_{args.dataset}_{sid}{args.out_suffix}.png')).convert('RGB') for sid in sids]
         w = max(im.width for im in ims); pad = 40
         sheet = Image.new('RGB', (w, sum(im.height + pad for im in ims)), 'white'); y = 0; dr = ImageDraw.Draw(sheet)
         for sid, im in zip(sids, ims):
